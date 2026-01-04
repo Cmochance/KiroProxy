@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+
+# Build
+build/
+dist/
+release/
+*.spec
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# HAR files (contain sensitive data)
+*.har
+
+# Logs
+*.log
+
+# Test files
+*.txt
+
+# Other projects
+Antigravity-Manager/
+cc-switch/
