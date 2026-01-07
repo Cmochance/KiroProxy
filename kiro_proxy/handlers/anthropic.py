@@ -259,6 +259,18 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                             print(f"=== Kiro API Error ===")
                             print(f"Status: {response.status_code}")
                             print(f"Response: {error_str[:500]}")
+                            print(f"Request model: {model}")
+                            print(f"History len: {len(history) if history else 0}")
+                            print(f"Tool results: {len(tool_results) if tool_results else 0}")
+                            # 对于 400 错误，打印更多请求细节
+                            if response.status_code == 400:
+                                print(f"Kiro request keys: {list(kiro_request.keys())}")
+                                if 'conversationState' in kiro_request:
+                                    cs = kiro_request['conversationState']
+                                    print(f"  conversationState keys: {list(cs.keys())}")
+                                    if 'currentMessage' in cs:
+                                        cm = cs['currentMessage']
+                                        print(f"  currentMessage keys: {list(cm.keys())}")
                             print(f"======================")
                             
                             # 使用统一的错误处理
