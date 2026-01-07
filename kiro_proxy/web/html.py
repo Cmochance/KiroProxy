@@ -333,6 +333,33 @@ API Key: any
 模型: gpt-4o</code></pre>
   </div>
   <div class="card">
+    <h3>终端环境变量配置</h3>
+    <p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">Claude Code 终端版需要设置环境变量才能使用代理</p>
+    
+    <h4 style="color:var(--muted);margin-bottom:0.5rem">临时生效（当前终端）</h4>
+    <pre id="envTempCmd"><code>export ANTHROPIC_BASE_URL="<span class="pyUrl"></span>"
+export ANTHROPIC_API_KEY="sk-any"</code></pre>
+    <button class="copy-btn" onclick="copyEnvTemp()" style="margin-top:0.5rem">复制命令</button>
+    
+    <h4 style="color:var(--muted);margin-top:1rem;margin-bottom:0.5rem">永久生效（写入 ~/.bashrc）</h4>
+    <pre id="envPermCmd"><code>echo 'export ANTHROPIC_BASE_URL="<span class="pyUrl"></span>"' >> ~/.bashrc
+echo 'export ANTHROPIC_API_KEY="sk-any"' >> ~/.bashrc
+source ~/.bashrc</code></pre>
+    <button class="copy-btn" onclick="copyEnvPerm()" style="margin-top:0.5rem">复制命令</button>
+    
+    <h4 style="color:var(--muted);margin-top:1rem;margin-bottom:0.5rem">清除配置</h4>
+    <pre id="envClearCmd"><code># 从 ~/.bashrc 中删除相关行
+sed -i '/ANTHROPIC_BASE_URL/d' ~/.bashrc
+sed -i '/ANTHROPIC_API_KEY/d' ~/.bashrc
+# 清除当前终端变量
+unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY</code></pre>
+    <button class="copy-btn" onclick="copyEnvClear()" style="margin-top:0.5rem">复制命令</button>
+    
+    <p style="color:var(--muted);font-size:0.75rem;margin-top:1rem">
+      💡 macOS/zsh 用户请将 <code>~/.bashrc</code> 替换为 <code>~/.zshrc</code>
+    </p>
+  </div>
+  <div class="card">
     <h3>模型映射</h3>
     <p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">支持多种模型名称，自动映射到 Kiro 模型</p>
     <table>
@@ -478,6 +505,20 @@ function copy(text){
     document.body.appendChild(toast);
     setTimeout(()=>toast.remove(),1500);
   });
+}
+
+function copyEnvTemp(){
+  const url=location.origin;
+  copy(`export ANTHROPIC_BASE_URL="${url}"\\nexport ANTHROPIC_API_KEY="sk-any"`);
+}
+
+function copyEnvPerm(){
+  const url=location.origin;
+  copy(`echo 'export ANTHROPIC_BASE_URL="${url}"' >> ~/.bashrc\\necho 'export ANTHROPIC_API_KEY="sk-any"' >> ~/.bashrc\\nsource ~/.bashrc`);
+}
+
+function copyEnvClear(){
+  copy(`sed -i '/ANTHROPIC_BASE_URL/d' ~/.bashrc\\nsed -i '/ANTHROPIC_API_KEY/d' ~/.bashrc\\nunset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY`);
 }
 
 function formatUptime(s){
