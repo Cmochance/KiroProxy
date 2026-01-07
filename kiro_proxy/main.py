@@ -370,6 +370,25 @@ async def api_account_usage(account_id: str):
     return await admin.get_account_usage_info(account_id)
 
 
+# ==================== 历史消息管理 API ====================
+
+from .core import get_history_config, update_history_config, TruncateStrategy
+
+@app.get("/api/settings/history")
+async def api_get_history_config():
+    """获取历史消息管理配置"""
+    config = get_history_config()
+    return config.to_dict()
+
+
+@app.post("/api/settings/history")
+async def api_update_history_config(request: Request):
+    """更新历史消息管理配置"""
+    data = await request.json()
+    update_history_config(data)
+    return {"ok": True, "config": get_history_config().to_dict()}
+
+
 # ==================== 文档 API ====================
 
 # 文档标题映射
@@ -410,7 +429,7 @@ async def api_docs_content(doc_id: str):
 def run(port: int = 8080):
     import uvicorn
     print(f"\n{'='*50}")
-    print(f"  Kiro API Proxy v1.5.0")
+    print(f"  Kiro API Proxy v1.6.0")
     print(f"  http://localhost:{port}")
     print(f"{'='*50}\n")
     uvicorn.run(app, host="0.0.0.0", port=port)

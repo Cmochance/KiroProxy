@@ -665,41 +665,267 @@ def convert_kiro_response_to_openai(result: dict, model: str, msg_id: str) -> di
 
 # ==================== Gemini 转换 ====================
 
-def convert_gemini_contents_to_kiro(contents: List[dict], system_instruction: dict, model: str) -> Tuple[str, List[dict]]:
-    """将 Gemini 消息格式转换为 Kiro 格式"""
+def convert_gemini_tools_to_kiro(tools: List[dict]) -> List[dict]:
+    """将 Gemini 工具格式转换为 Kiro 格式
+    
+    Gemini 工具格式：
+    {
+        "functionDeclarations": [
+            {
+                "name": "get_weather",
+                "description": "Get weather info",
+                "parameters": {...}
+            }
+        ]
+    }
+    """
+    kiro_tools = []
+    function_count = 0
+    
+    for tool in tools:
+        # Gemini 的工具定义在 functionDeclarations 中
+        declarations = tool.get("functionDeclarations", [])
+        
+        for func in declarations:
+            # 限制工具数量
+            if function_count >= MAX_TOOLS:
+                break
+            function_count += 1
+            
+            name = func.get("name", "")
+            description = func.get("description", f"Tool: {name}")
+            description = truncate_description(description)
+            parameters = func.get("parameters", {"type": "object", "properties": {}})
+            
+            kiro_tools.append({
+                "toolSpecification": {
+                    "name": name,
+                    "description": description,
+                    "inputSchema": {
+                        "json": parameters
+                    }
+                }
+            })
+    
+    return kiro_tools
+
+
+def convert_gemini_contents_to_kiro(
+    contents: List[dict], 
+    system_instruction: dict, 
+    model: str,
+    tools: List[dict] = None,
+    tool_config: dict = None
+) -> Tuple[str, List[dict], List[dict], List[dict]]:
+    """将 Gemini 消息格式转换为 Kiro 格式
+    
+    增强：
+    - 支持 functionCall 和 functionResponse
+    - 支持 tool_config
+    
+    Returns:
+        (user_content, history, tool_results, kiro_tools)
+    """
     history = []
     user_content = ""
+    current_tool_results = []
+    pending_tool_results = []
     
+    # 处理 system instruction
     system_text = ""
     if system_instruction:
         parts = system_instruction.get("parts", [])
         system_text = " ".join(p.get("text", "") for p in parts if "text" in p)
     
-    for content in contents:
+    # 处理 tool_config（类似 tool_choice）
+    tool_instruction = ""
+    if tool_config:
+        mode = tool_config.get("functionCallingConfig", {}).get("mode", "")
+        if mode in ("ANY", "REQUIRED"):
+            tool_instruction = "\n\n[CRITICAL INSTRUCTION] You MUST use one of the provided tools to respond. Do NOT respond with plain text."
+    
+    for i, content in enumerate(contents):
         role = content.get("role", "user")
         parts = content.get("parts", [])
-        text = " ".join(p.get("text", "") for p in parts if "text" in p)
+        is_last = (i == len(contents) - 1)
+        
+        # 提取文本和工具调用
+        text_parts = []
+        tool_calls = []
+        tool_responses = []
+        
+        for part in parts:
+            if "text" in part:
+                text_parts.append(part["text"])
+            elif "functionCall" in part:
+                # Gemini 的工具调用
+                fc = part["functionCall"]
+                tool_calls.append({
+                    "toolUseId": fc.get("name", "") + "_" + str(i),  # Gemini 没有 ID，生成一个
+                    "name": fc.get("name", ""),
+                    "input": fc.get("args", {})
+                })
+            elif "functionResponse" in part:
+                # Gemini 的工具响应
+                fr = part["functionResponse"]
+                response_content = fr.get("response", {})
+                if isinstance(response_content, dict):
+                    response_text = json.dumps(response_content)
+                else:
+                    response_text = str(response_content)
+                
+                tool_responses.append({
+                    "content": [{"text": response_text}],
+                    "status": "success",
+                    "toolUseId": fr.get("name", "") + "_" + str(i - 1)  # 匹配上一个调用
+                })
+        
+        text = " ".join(text_parts)
         
         if role == "user":
+            # 处理待处理的 tool responses
+            if pending_tool_results:
+                seen_ids = set()
+                unique_results = []
+                for tr in pending_tool_results:
+                    if tr["toolUseId"] not in seen_ids:
+                        seen_ids.add(tr["toolUseId"])
+                        unique_results.append(tr)
+                
+                history.append({
+                    "userInputMessage": {
+                        "content": "Tool results provided.",
+                        "modelId": model,
+                        "origin": "AI_EDITOR",
+                        "userInputMessageContext": {
+                            "toolResults": unique_results
+                        }
+                    }
+                })
+                pending_tool_results = []
+            
+            # 处理 functionResponse（用户消息中的工具响应）
+            if tool_responses:
+                pending_tool_results.extend(tool_responses)
+            
+            # 合并 system prompt
             if system_text and not history:
-                text = f"{system_text}\n\n{text}"
-            history.append({
-                "userInputMessage": {
-                    "content": text,
-                    "modelId": model,
-                    "origin": "AI_EDITOR"
-                }
-            })
-            user_content = text
+                text = f"{system_text}{tool_instruction}\n\n{text}"
+            
+            if is_last:
+                user_content = text
+                if pending_tool_results:
+                    current_tool_results = pending_tool_results
+                    pending_tool_results = []
+            else:
+                if text:
+                    history.append({
+                        "userInputMessage": {
+                            "content": text,
+                            "modelId": model,
+                            "origin": "AI_EDITOR"
+                        }
+                    })
+        
         elif role == "model":
+            # 处理待处理的 tool responses
+            if pending_tool_results:
+                seen_ids = set()
+                unique_results = []
+                for tr in pending_tool_results:
+                    if tr["toolUseId"] not in seen_ids:
+                        seen_ids.add(tr["toolUseId"])
+                        unique_results.append(tr)
+                
+                history.append({
+                    "userInputMessage": {
+                        "content": "Tool results provided.",
+                        "modelId": model,
+                        "origin": "AI_EDITOR",
+                        "userInputMessageContext": {
+                            "toolResults": unique_results
+                        }
+                    }
+                })
+                pending_tool_results = []
+            
+            assistant_text = text if text else "I understand."
+            
             history.append({
                 "assistantResponseMessage": {
-                    "content": text if text else "I understand.",
-                    "toolUses": []
+                    "content": assistant_text,
+                    "toolUses": tool_calls
                 }
             })
+    
+    # 处理末尾的 tool results
+    if pending_tool_results:
+        current_tool_results = pending_tool_results
+        if not user_content:
+            user_content = "Tool results provided."
+    
+    # 如果没有用户消息
+    if not user_content:
+        if contents:
+            last_parts = contents[-1].get("parts", [])
+            user_content = " ".join(p.get("text", "") for p in last_parts if "text" in p)
+        if not user_content:
+            user_content = "Continue"
     
     # 修复历史交替
     history = fix_history_alternation(history, model)
     
-    return user_content, history[:-1] if history else []
+    # 移除最后一条（当前用户消息）
+    if history and "userInputMessage" in history[-1]:
+        history = history[:-1]
+    
+    # 转换工具
+    kiro_tools = convert_gemini_tools_to_kiro(tools) if tools else []
+    
+    return user_content, history, current_tool_results, kiro_tools
+
+
+def convert_kiro_response_to_gemini(result: dict, model: str) -> dict:
+    """将 Kiro 响应转换为 Gemini 格式"""
+    text = "".join(result.get("content", []))
+    tool_uses = result.get("tool_uses", [])
+    
+    parts = []
+    
+    # 添加文本部分
+    if text:
+        parts.append({"text": text})
+    
+    # 添加工具调用
+    for tool_use in tool_uses:
+        if tool_use.get("type") == "tool_use":
+            parts.append({
+                "functionCall": {
+                    "name": tool_use.get("name", ""),
+                    "args": tool_use.get("input", {})
+                }
+            })
+    
+    # 映射 stop_reason
+    stop_reason = result.get("stop_reason", "STOP")
+    finish_reason = "STOP"
+    if tool_uses:
+        finish_reason = "TOOL_CALLS"
+    elif stop_reason == "max_tokens":
+        finish_reason = "MAX_TOKENS"
+    
+    return {
+        "candidates": [{
+            "content": {
+                "parts": parts,
+                "role": "model"
+            },
+            "finishReason": finish_reason,
+            "index": 0
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 100,
+            "candidatesTokenCount": 100,
+            "totalTokenCount": 200
+        }
+    }

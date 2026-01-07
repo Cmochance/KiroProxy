@@ -9,8 +9,9 @@ from fastapi.responses import StreamingResponse
 from ..config import KIRO_API_URL, map_model_name
 from ..core import state, RetryableRequest, is_retryable_error, stats_manager, flow_monitor, TokenUsage
 from ..core.state import RequestLog
+from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error, TruncateStrategy
 from ..credential import quota_manager
-from ..kiro_api import build_headers, build_kiro_request, parse_event_stream_full, is_quota_exceeded_error
+from ..kiro_api import build_headers, build_kiro_request, parse_event_stream_full, parse_event_stream, is_quota_exceeded_error
 from ..converters import (
     generate_session_id,
     convert_anthropic_tools_to_kiro,
@@ -84,6 +85,19 @@ async def handle_count_tokens(request: Request):
     return {"input_tokens": _count_tokens_from_messages(messages, system)}
 
 
+async def _call_kiro_for_summary(prompt: str, account, headers: dict) -> str:
+    """调用 Kiro API 生成摘要（内部使用）"""
+    kiro_request = build_kiro_request(prompt, "claude-haiku-4.5", [])  # 用快速模型生成摘要
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=60) as client:
+            resp = await client.post(KIRO_API_URL, json=kiro_request, headers=headers)
+            if resp.status_code == 200:
+                return parse_event_stream(resp.content)
+    except Exception as e:
+        print(f"[Summary] API 调用失败: {e}")
+    return ""
+
+
 async def handle_messages(request: Request):
     """处理 /v1/messages 请求"""
     start_time = time.time()
@@ -128,8 +142,32 @@ async def handle_messages(request: Request):
         flow_monitor.fail_flow(flow_id, "authentication_error", f"Failed to get token for account {account.name}")
         raise HTTPException(500, f"Failed to get token for account {account.name}")
     
+    # 使用账号的动态 Machine ID（提前构建，供摘要使用）
+    creds = account.get_credentials()
+    headers = build_headers(
+        token,
+        machine_id=account.get_machine_id(),
+        profile_arn=creds.profile_arn if creds else None,
+        client_id=creds.client_id if creds else None
+    )
+    
     # 转换消息格式
     user_content, history, tool_results = convert_anthropic_messages_to_kiro(messages, system)
+    
+    # 历史消息预处理
+    history_manager = HistoryManager(get_history_config())
+    
+    # 检查是否需要智能摘要
+    if history_manager.should_summarize(history):
+        # 创建 API 调用函数
+        async def api_caller(prompt: str) -> str:
+            return await _call_kiro_for_summary(prompt, account, headers)
+        history = await history_manager.pre_process_async(history, user_content, api_caller)
+    else:
+        history = history_manager.pre_process(history, user_content)
+    
+    if history_manager.was_truncated:
+        print(f"[Anthropic] {history_manager.truncate_info}")
     
     # 提取最后一条消息中的图片
     images = []
@@ -142,25 +180,17 @@ async def handle_messages(request: Request):
     kiro_tools = convert_anthropic_tools_to_kiro(tools) if tools else None
     kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
     
-    # 使用账号的动态 Machine ID
-    creds = account.get_credentials()
-    headers = build_headers(
-        token,
-        machine_id=account.get_machine_id(),
-        profile_arn=creds.profile_arn if creds else None,
-        client_id=creds.client_id if creds else None
-    )
-    
     if stream:
-        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id)
+        return await _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager)
     else:
-        return await _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id)
+        return await _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id, flow_id, history, user_content, kiro_tools, images, tool_results, history_manager)
 
 
-async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None):
+async def _handle_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None):
     """Handle streaming responses with auto-retry on quota exceeded and network errors."""
     
     async def generate():
+        nonlocal kiro_request, history
         current_account = account
         retry_count = 0
         max_retries = 2
@@ -222,6 +252,18 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
                                     continue
 
                             _, error_type, error_msg = _classify_kiro_error(error_str, response.status_code)
+                            
+                            # 检查是否为内容长度超限错误，尝试截断重试
+                            if is_content_length_error(response.status_code, error_str):
+                                truncated_history, should_retry = history_manager.handle_length_error(history, retry_count)
+                                if should_retry:
+                                    print(f"[Stream] 内容长度超限，{history_manager.truncate_info}")
+                                    history = truncated_history
+                                    # 重新构建请求
+                                    kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
+                                    retry_count += 1
+                                    continue
+                            
                             if flow_id:
                                 flow_monitor.fail_flow(flow_id, error_type, error_msg, response.status_code, error_str)
                             yield f'data: {{"type":"error","error":{{"type":"{error_type}","message":"{error_msg}"}}}}\n\n'
@@ -342,7 +384,7 @@ async def _handle_stream(kiro_request, headers, account, model, log_id, start_ti
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None):
+async def _handle_non_stream(kiro_request, headers, account, model, log_id, start_time, session_id=None, flow_id=None, history=None, user_content="", kiro_tools=None, images=None, tool_results=None, history_manager=None):
     """Handle non-streaming responses with auto-retry on quota exceeded and network errors."""
     error_msg = None
     status_code = 200
@@ -395,6 +437,15 @@ async def _handle_non_stream(kiro_request, headers, account, model, log_id, star
                         if next_account and retry < max_retries:
                             current_account = next_account
                             headers["Authorization"] = f"Bearer {current_account.get_token()}"
+                            continue
+                    
+                    # 检查是否为内容长度超限错误，尝试截断重试
+                    if history_manager and is_content_length_error(response.status_code, error_msg):
+                        truncated_history, should_retry = history_manager.handle_length_error(history, retry)
+                        if should_retry:
+                            print(f"[NonStream] 内容长度超限，{history_manager.truncate_info}")
+                            history = truncated_history
+                            kiro_request = build_kiro_request(user_content, model, history, kiro_tools, images, tool_results)
                             continue
                     
                     if flow_id:

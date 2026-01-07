@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from ..config import KIRO_API_URL, map_model_name
 from ..core import state, is_retryable_error, stats_manager
 from ..core.state import RequestLog
+from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error
 from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, is_quota_exceeded_error
 from ..converters import generate_session_id, convert_openai_messages_to_kiro, extract_images_from_content
 
@@ -47,10 +48,41 @@ async def handle_chat_completions(request: Request):
     if not token:
         raise HTTPException(500, f"Failed to get token for account {account.name}")
     
+    # 使用账号的动态 Machine ID（提前构建，供摘要使用）
+    creds = account.get_credentials()
+    headers = build_headers(
+        token,
+        machine_id=account.get_machine_id(),
+        profile_arn=creds.profile_arn if creds else None,
+        client_id=creds.client_id if creds else None
+    )
+    
     # 使用增强的转换函数
     user_content, history, tool_results, kiro_tools = convert_openai_messages_to_kiro(
         messages, model, tools, tool_choice
     )
+    
+    # 历史消息预处理
+    history_manager = HistoryManager(get_history_config())
+    
+    # 检查是否需要智能摘要
+    if history_manager.should_summarize(history):
+        async def api_caller(prompt: str) -> str:
+            req = build_kiro_request(prompt, "claude-haiku-4.5", [])
+            try:
+                async with httpx.AsyncClient(verify=False, timeout=60) as client:
+                    resp = await client.post(KIRO_API_URL, json=req, headers=headers)
+                    if resp.status_code == 200:
+                        return parse_event_stream(resp.content)
+            except Exception as e:
+                print(f"[Summary] API 调用失败: {e}")
+            return ""
+        history = await history_manager.pre_process_async(history, user_content, api_caller)
+    else:
+        history = history_manager.pre_process(history, user_content)
+    
+    if history_manager.was_truncated:
+        print(f"[OpenAI] {history_manager.truncate_info}")
     
     # 提取最后一条消息中的图片
     images = []
@@ -64,15 +96,6 @@ async def handle_chat_completions(request: Request):
         images=images,
         tools=kiro_tools if kiro_tools else None,
         tool_results=tool_results if tool_results else None
-    )
-    
-    # 使用账号的动态 Machine ID
-    creds = account.get_credentials()
-    headers = build_headers(
-        token,
-        machine_id=account.get_machine_id(),
-        profile_arn=creds.profile_arn if creds else None,
-        client_id=creds.client_id if creds else None
     )
     
     error_msg = None
@@ -127,6 +150,20 @@ async def handle_chat_completions(request: Request):
                         if next_account and retry < max_retries:
                             current_account = next_account
                             headers["Authorization"] = f"Bearer {current_account.get_token()}"
+                            continue
+                    
+                    # 检查是否为内容长度超限错误，尝试截断重试
+                    if is_content_length_error(resp.status_code, error_msg):
+                        truncated_history, should_retry = history_manager.handle_length_error(history, retry)
+                        if should_retry:
+                            print(f"[OpenAI] 内容长度超限，{history_manager.truncate_info}")
+                            history = truncated_history
+                            kiro_request = build_kiro_request(
+                                user_content, model, history,
+                                images=images,
+                                tools=kiro_tools if kiro_tools else None,
+                                tool_results=tool_results if tool_results else None
+                            )
                             continue
                     
                     raise HTTPException(resp.status_code, resp.text)

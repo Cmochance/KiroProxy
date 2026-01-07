@@ -133,6 +133,7 @@ HTML_HEADER = '''
   <div class="tab" data-tab="accounts">账号</div>
   <div class="tab" data-tab="logs">日志</div>
   <div class="tab" data-tab="api">API</div>
+  <div class="tab" data-tab="settings">设置</div>
 </div>
 '''
 
@@ -308,7 +309,93 @@ API Key: any
 </div>
 '''
 
-HTML_BODY = HTML_HEADER + HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_LOGS + HTML_API
+HTML_SETTINGS = '''
+<div class="panel" id="settings">
+  <div class="card">
+    <h3>历史消息管理 <button class="secondary small" onclick="loadHistoryConfig()">刷新</button></h3>
+    <p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">
+      处理 Kiro API 的输入长度限制（CONTENT_LENGTH_EXCEEDS_THRESHOLD 错误）
+    </p>
+    
+    <div style="margin-bottom:1rem">
+      <p style="font-weight:500;margin-bottom:0.5rem">启用的策略（可多选）：</p>
+      <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;cursor:pointer">
+        <input type="checkbox" id="strategyAutoTruncate" onchange="updateHistoryConfig()">
+        <span><strong>自动截断</strong> - 发送前自动截断历史消息</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;cursor:pointer">
+        <input type="checkbox" id="strategySmartSummary" onchange="updateHistoryConfig()">
+        <span><strong>智能摘要</strong> - 用 AI 生成早期对话摘要（需额外 API 调用）</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;cursor:pointer">
+        <input type="checkbox" id="strategyErrorRetry" onchange="updateHistoryConfig()">
+        <span><strong>错误重试</strong> - 遇到长度错误时截断后重试</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;cursor:pointer">
+        <input type="checkbox" id="strategyPreEstimate" onchange="updateHistoryConfig()">
+        <span><strong>预估检测</strong> - 发送前预估 token 数量</span>
+      </label>
+    </div>
+    
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1rem">
+      <div>
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">最大消息数</label>
+        <input type="number" id="maxMessages" value="30" min="5" max="100" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+      </div>
+      <div>
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">最大字符数</label>
+        <input type="number" id="maxChars" value="150000" min="10000" max="500000" step="10000" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+      </div>
+      <div>
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">重试时保留消息数</label>
+        <input type="number" id="retryMaxMessages" value="15" min="3" max="50" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+      </div>
+      <div>
+        <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">最大重试次数</label>
+        <input type="number" id="maxRetries" value="2" min="1" max="5" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+      </div>
+    </div>
+    
+    <div id="summaryOptions" style="display:none;margin-bottom:1rem;padding:1rem;background:var(--bg);border-radius:6px">
+      <p style="font-weight:500;margin-bottom:0.5rem">智能摘要选项：</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem">
+        <div>
+          <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">保留最近消息数</label>
+          <input type="number" id="summaryKeepRecent" value="10" min="3" max="30" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.875rem;color:var(--muted);margin-bottom:0.25rem">触发摘要阈值（字符）</label>
+          <input type="number" id="summaryThreshold" value="100000" min="50000" max="200000" step="10000" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)" onchange="updateHistoryConfig()">
+        </div>
+      </div>
+    </div>
+    
+    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+      <input type="checkbox" id="addWarningHeader" onchange="updateHistoryConfig()">
+      <span>截断时添加警告信息</span>
+    </label>
+    
+    <div style="margin-top:1rem;padding:1rem;background:var(--bg);border-radius:6px">
+      <p style="font-size:0.875rem;color:var(--muted)">
+        <strong>策略说明：</strong><br>
+        • <strong>自动截断</strong>：每次请求前检查历史消息数量和大小，超限则截断<br>
+        • <strong>智能摘要</strong>：用 AI 生成早期对话摘要，保留关键信息（需额外 API 调用，增加延迟）<br>
+        • <strong>错误重试</strong>：收到长度超限错误后，截断历史消息并自动重试<br>
+        • <strong>预估检测</strong>：发送前估算 token 数量，超过阈值则预先截断<br>
+        <br>
+        推荐组合：<strong>错误重试</strong>（默认）或 <strong>智能摘要 + 错误重试</strong>
+      </p>
+    </div>
+  </div>
+  
+  <div class="card">
+    <h3>其他设置</h3>
+    <p style="color:var(--muted);font-size:0.875rem">更多设置项即将推出...</p>
+  </div>
+</div>
+'''
+
+HTML_BODY = HTML_HEADER + HTML_HELP + HTML_FLOWS + HTML_MONITOR + HTML_ACCOUNTS + HTML_LOGS + HTML_API + HTML_SETTINGS
 
 
 # ==================== JavaScript ====================
@@ -960,7 +1047,57 @@ async function exportFlows(){
 }
 '''
 
-JS_SCRIPTS = JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_ACCOUNTS + JS_LOGIN + JS_FLOWS
+JS_SETTINGS = '''
+// 设置页面
+async function loadHistoryConfig(){
+  try{
+    const r=await fetch('/api/settings/history');
+    const d=await r.json();
+    $('#strategyAutoTruncate').checked=d.strategies?.includes('auto_truncate')||false;
+    $('#strategySmartSummary').checked=d.strategies?.includes('smart_summary')||false;
+    $('#strategyErrorRetry').checked=d.strategies?.includes('error_retry')||false;
+    $('#strategyPreEstimate').checked=d.strategies?.includes('pre_estimate')||false;
+    $('#maxMessages').value=d.max_messages||30;
+    $('#maxChars').value=d.max_chars||150000;
+    $('#retryMaxMessages').value=d.retry_max_messages||15;
+    $('#maxRetries').value=d.max_retries||2;
+    $('#summaryKeepRecent').value=d.summary_keep_recent||10;
+    $('#summaryThreshold').value=d.summary_threshold||100000;
+    $('#addWarningHeader').checked=d.add_warning_header!==false;
+    // 显示/隐藏摘要选项
+    $('#summaryOptions').style.display=$('#strategySmartSummary').checked?'block':'none';
+  }catch(e){console.error('加载配置失败:',e)}
+}
+
+async function updateHistoryConfig(){
+  const strategies=[];
+  if($('#strategyAutoTruncate').checked)strategies.push('auto_truncate');
+  if($('#strategySmartSummary').checked)strategies.push('smart_summary');
+  if($('#strategyErrorRetry').checked)strategies.push('error_retry');
+  if($('#strategyPreEstimate').checked)strategies.push('pre_estimate');
+  if(strategies.length===0)strategies.push('none');
+  // 显示/隐藏摘要选项
+  $('#summaryOptions').style.display=$('#strategySmartSummary').checked?'block':'none';
+  const config={
+    strategies,
+    max_messages:parseInt($('#maxMessages').value)||30,
+    max_chars:parseInt($('#maxChars').value)||150000,
+    retry_max_messages:parseInt($('#retryMaxMessages').value)||15,
+    max_retries:parseInt($('#maxRetries').value)||2,
+    summary_keep_recent:parseInt($('#summaryKeepRecent').value)||10,
+    summary_threshold:parseInt($('#summaryThreshold').value)||100000,
+    add_warning_header:$('#addWarningHeader').checked
+  };
+  try{
+    await fetch('/api/settings/history',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
+  }catch(e){console.error('保存配置失败:',e)}
+}
+
+// 页面加载时加载设置
+loadHistoryConfig();
+'''
+
+JS_SCRIPTS = JS_UTILS + JS_TABS + JS_STATUS + JS_DOCS + JS_STATS + JS_LOGS + JS_ACCOUNTS + JS_LOGIN + JS_FLOWS + JS_SETTINGS
 
 
 # ==================== 组装最终 HTML ====================
@@ -978,7 +1115,7 @@ HTML_PAGE = f'''<!DOCTYPE html>
 <body>
 <div class="container">
 {HTML_BODY}
-<div class="footer">Kiro API Proxy v1.5.0 - Flow Monitor | 在线登录 | Token 自动刷新 | 配额管理</div>
+<div class="footer">Kiro API Proxy v1.6.0 - Flow Monitor | 在线登录 | Token 自动刷新 | 配额管理</div>
 </div>
 <script>
 {JS_SCRIPTS}
