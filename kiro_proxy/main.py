@@ -386,7 +386,7 @@ async def api_glm_chat(request: Request):
         docs_dir = Path(__file__).parent / "docs"
         if docs_dir.exists():
             for doc_file in docs_dir.glob("*.md"):
-                docs_content += f"\n\n## {doc_file.stem}\n"
+                docs_content += f"\n\n---\n# {doc_file.stem}\n"
                 docs_content += doc_file.read_text(encoding="utf-8")
     except:
         pass
@@ -400,12 +400,17 @@ async def api_glm_chat(request: Request):
         except:
             pass
     
-    # 构建 System Prompt
-    system_prompt = f"""你是 Kiro Proxy 的使用助手。请根据以下文档回答用户问题，回答要简洁实用。
+    # 构建简洁的 System Prompt
+    system_prompt = f"""你是 Kiro Proxy 的专属助手。你只回答与 Kiro Proxy 相关的问题。
 
-{docs_content}
+重要规则：
+1. 只根据下面的文档内容回答问题
+2. 回答要简洁，直接给出步骤或答案
+3. 不要自我介绍，不要问候语
+4. 如果用户问的不是 Kiro Proxy 相关问题，说"我只能回答 Kiro Proxy 相关问题"
 
-请直接回答用户问题，不要自我介绍。如果问题与 Kiro Proxy 无关，礼貌地引导用户询问相关问题。"""
+文档内容：
+{docs_content}"""
     
     # 注入 system prompt
     final_messages = [{"role": "system", "content": system_prompt}]
@@ -429,7 +434,7 @@ async def api_glm_chat_stream(request: Request):
         docs_dir = Path(__file__).parent / "docs"
         if docs_dir.exists():
             for doc_file in docs_dir.glob("*.md"):
-                docs_content += f"\n\n## {doc_file.stem}\n"
+                docs_content += f"\n\n---\n# {doc_file.stem}\n"
                 docs_content += doc_file.read_text(encoding="utf-8")
     except:
         pass
@@ -442,11 +447,16 @@ async def api_glm_chat_stream(request: Request):
         except:
             pass
     
-    system_prompt = f"""你是 Kiro Proxy 的使用助手。请根据以下文档回答用户问题，回答要简洁实用。
+    system_prompt = f"""你是 Kiro Proxy 的专属助手。你只回答与 Kiro Proxy 相关的问题。
 
-{docs_content}
+重要规则：
+1. 只根据下面的文档内容回答问题
+2. 回答要简洁，直接给出步骤或答案
+3. 不要自我介绍，不要问候语
+4. 如果用户问的不是 Kiro Proxy 相关问题，说"我只能回答 Kiro Proxy 相关问题"
 
-请直接回答用户问题，不要自我介绍。如果问题与 Kiro Proxy 无关，礼貌地引导用户询问相关问题。"""
+文档内容：
+{docs_content}"""
     
     final_messages = [{"role": "system", "content": system_prompt}]
     for m in messages:
