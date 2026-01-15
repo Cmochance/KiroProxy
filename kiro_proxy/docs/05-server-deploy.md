@@ -181,62 +181,201 @@ pip install -r requirements.txt
 
 ## 方式三：Docker 部署
 
-### 使用 Dockerfile
+项目已内置 `Dockerfile` 和 `docker-compose.yml`，支持一键部署。
 
-创建 `Dockerfile`：
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# 安装依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 复制代码
-COPY . .
-
-# 暴露端口
-EXPOSE 8080
-
-# 数据目录
-VOLUME ["/root/.config/kiro-proxy"]
-
-# 启动
-CMD ["python", "run.py"]
-```
-
-构建并运行：
+### 快速启动（推荐）
 
 ```bash
-docker build -t kiro-proxy .
-docker run -d -p 8080:8080 -v kiro-data:/root/.config/kiro-proxy --name kiro-proxy kiro-proxy
+# 克隆项目
+git clone https://github.com/petehsu/KiroProxy.git
+cd KiroProxy
+
+# 使用 Docker Compose 启动
+docker compose up -d
+
+# 查看日志
+docker compose logs -f
+
+# 停止服务
+docker compose down
 ```
 
-### Docker Compose
+启动后访问 http://localhost:8080
 
-创建 `docker-compose.yml`：
+### 自定义端口
+
+```bash
+# 方法一：环境变量
+KIRO_PORT=8081 docker compose up -d
+
+# 方法二：修改 docker-compose.yml
+# 将 ports 改为 "8081:8080"
+```
+
+### Docker 命令行方式
+
+如果不使用 Docker Compose，可以直接用 Docker 命令：
+
+```bash
+# 构建镜像
+docker build -t kiro-proxy .
+
+# 运行容器
+docker run -d \
+  --name kiro-proxy \
+  -p 8080:8080 \
+  -v kiro-proxy-config:/home/kiro/.kiro-proxy \
+  --restart unless-stopped \
+  kiro-proxy
+
+# 查看日志
+docker logs -f kiro-proxy
+
+# 停止容器
+docker stop kiro-proxy
+
+# 删除容器
+docker rm kiro-proxy
+```
+
+### 使用预构建镜像（如果发布到 Docker Hub）
+
+```bash
+# 拉取镜像
+docker pull petehsu/kiro-proxy:latest
+
+# 运行
+docker run -d \
+  --name kiro-proxy \
+  -p 8080:8080 \
+  -v kiro-proxy-config:/home/kiro/.kiro-proxy \
+  --restart unless-stopped \
+  petehsu/kiro-proxy:latest
+```
+
+### Docker Compose 完整配置
+
+项目自带的 `docker-compose.yml`：
 
 ```yaml
-version: '3'
 services:
   kiro-proxy:
-    build: .
-    ports:
-      - "8080:8080"
-    volumes:
-      - kiro-data:/root/.config/kiro-proxy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kiro-proxy:latest
+    container_name: kiro-proxy
     restart: unless-stopped
+    ports:
+      - "${KIRO_PORT:-8080}:8080"
+    volumes:
+      # 配置持久化 - 保存账号信息
+      - kiro-config:/home/kiro/.kiro-proxy
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/api/status', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
-  kiro-data:
+  kiro-config:
+    name: kiro-proxy-config
 ```
 
-运行：
+### 数据持久化
+
+配置文件存储在 Docker volume `kiro-proxy-config` 中，包含：
+- 账号信息（Token、配置）
+- 限速设置
+- 历史记录设置
+
+**备份配置：**
+```bash
+# 导出账号
+docker exec kiro-proxy python run.py accounts export -o /tmp/accounts.json
+docker cp kiro-proxy:/tmp/accounts.json ./accounts-backup.json
+
+# 或直接复制 volume
+docker run --rm -v kiro-proxy-config:/data -v $(pwd):/backup alpine tar czf /backup/kiro-config-backup.tar.gz -C /data .
+```
+
+**恢复配置：**
+```bash
+# 导入账号
+docker cp ./accounts-backup.json kiro-proxy:/tmp/accounts.json
+docker exec kiro-proxy python run.py accounts import /tmp/accounts.json
+
+# 或恢复 volume
+docker run --rm -v kiro-proxy-config:/data -v $(pwd):/backup alpine tar xzf /backup/kiro-config-backup.tar.gz -C /data
+```
+
+### 健康检查
+
+容器内置健康检查，可通过以下方式查看：
 
 ```bash
-docker-compose up -d
+# 查看容器健康状态
+docker inspect --format='{{.State.Health.Status}}' kiro-proxy
+
+# 查看详细健康检查日志
+docker inspect --format='{{json .State.Health}}' kiro-proxy | jq
+```
+
+### 与其他容器配合
+
+**与 Nginx 反向代理配合：**
+
+```yaml
+# docker-compose.yml 扩展
+services:
+  kiro-proxy:
+    # ... 原有配置 ...
+    networks:
+      - proxy-network
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./certs:/etc/nginx/certs
+    depends_on:
+      - kiro-proxy
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    name: proxy-network
+```
+
+### 常用 Docker 命令
+
+```bash
+# 重启服务
+docker compose restart
+
+# 重新构建并启动
+docker compose up -d --build
+
+# 查看容器状态
+docker compose ps
+
+# 进入容器
+docker exec -it kiro-proxy bash
+
+# 清理未使用的镜像
+docker image prune -f
 ```
 
 ---

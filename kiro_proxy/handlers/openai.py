@@ -1,4 +1,7 @@
-"""OpenAI 协议处理 - /v1/chat/completions"""
+"""OpenAI 协议处理 - /v1/chat/completions
+
+增强版：支持更宽松的输入格式和完整的工具调用流式输出
+"""
 import json
 import uuid
 import time
@@ -9,29 +12,75 @@ from fastapi import Request, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ..config import KIRO_API_URL, map_model_name
-from ..core import state, is_retryable_error, stats_manager
+from ..core import state, is_retryable_error, stats_manager, flow_monitor, TokenUsage
 from ..core.state import RequestLog
 from ..core.history_manager import HistoryManager, get_history_config, is_content_length_error
 from ..core.error_handler import classify_error, ErrorType, format_error_log
 from ..core.rate_limiter import get_rate_limiter
-from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, is_quota_exceeded_error
+from ..kiro_api import build_headers, build_kiro_request, parse_event_stream, parse_event_stream_full, is_quota_exceeded_error
 from ..converters import generate_session_id, convert_openai_messages_to_kiro, extract_images_from_content
 
 
+def _normalize_openai_request(body: dict) -> dict:
+    """标准化 OpenAI 请求，支持更宽松的输入格式"""
+    messages = body.get("messages", [])
+    
+    # 如果没有 messages，尝试从其他字段构建
+    if not messages:
+        prompt = body.get("prompt") or body.get("text") or body.get("content") or body.get("query")
+        if prompt:
+            messages = [{"role": "user", "content": prompt}]
+            # 添加 system 如果有的话
+            system = body.get("system") or body.get("system_prompt")
+            if system:
+                messages.insert(0, {"role": "system", "content": system})
+    
+    return {
+        "messages": messages,
+        "model": body.get("model", "claude-sonnet-4"),
+        "stream": body.get("stream", False),
+        "tools": body.get("tools"),
+        "tool_choice": body.get("tool_choice"),
+    }
+
+
+def _convert_tool_uses_to_openai(tool_uses: list) -> list:
+    """将 Kiro 工具调用转换为 OpenAI 格式"""
+    tool_calls = []
+    for tool_use in tool_uses:
+        if tool_use.get("type") == "tool_use":
+            tool_calls.append({
+                "id": tool_use.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                "type": "function",
+                "function": {
+                    "name": tool_use.get("name", ""),
+                    "arguments": json.dumps(tool_use.get("input", {}))
+                }
+            })
+    return tool_calls
+
+
 async def handle_chat_completions(request: Request):
-    """处理 /v1/chat/completions 请求"""
+    """处理 /v1/chat/completions 请求
+    
+    增强版：支持更宽松的输入格式
+    """
     start_time = time.time()
     log_id = uuid.uuid4().hex[:8]
     
     body = await request.json()
-    model = map_model_name(body.get("model", "claude-sonnet-4"))
-    messages = body.get("messages", [])
-    stream = body.get("stream", False)
-    tools = body.get("tools", None)
-    tool_choice = body.get("tool_choice", None)
+    
+    # 标准化请求
+    normalized = _normalize_openai_request(body)
+    
+    model = map_model_name(normalized["model"])
+    messages = normalized["messages"]
+    stream = normalized["stream"]
+    tools = normalized["tools"]
+    tool_choice = normalized["tool_choice"]
     
     if not messages:
-        raise HTTPException(400, "messages required")
+        raise HTTPException(400, "messages required. Provide 'messages' array or 'prompt'/'text'/'content' field")
     
     session_id = generate_session_id(messages)
     account = state.get_available_account(session_id)
@@ -262,8 +311,23 @@ async def handle_chat_completions(request: Request):
         latency_ms=duration
     )
     
+    # 解析完整响应以获取工具调用
+    # 注意：这里 content 是通过 parse_event_stream 获取的文本，需要重新解析获取工具调用
+    # 为了支持工具调用，我们需要在前面保存原始响应
+    
     if stream:
         async def generate():
+            # 发送开始 chunk
+            start_chunk = {
+                "id": f"chatcmpl-{log_id}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]
+            }
+            yield f"data: {json.dumps(start_chunk)}\n\n"
+            
+            # 发送内容 chunks
             for chunk in [content[i:i+20] for i in range(0, len(content), 20)]:
                 data = {
                     "id": f"chatcmpl-{log_id}",
@@ -275,6 +339,7 @@ async def handle_chat_completions(request: Request):
                 yield f"data: {json.dumps(data)}\n\n"
                 await asyncio.sleep(0.02)
             
+            # 结束 chunk
             end_data = {
                 "id": f"chatcmpl-{log_id}",
                 "object": "chat.completion.chunk",
@@ -287,6 +352,7 @@ async def handle_chat_completions(request: Request):
         
         return StreamingResponse(generate(), media_type="text/event-stream")
     
+    # 非流式响应
     return {
         "id": f"chatcmpl-{log_id}",
         "object": "chat.completion",

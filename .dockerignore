@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 测试
+test_*.py
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 文档和资源（保留必要的）
+*.md
+!kiro_proxy/docs/*.md
+
+# 构建相关
+build.py
+*.spec
+
+# 临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# 本地配置
+*.local
+.env.local
+
+# Codex 目录
+codex/

@@ -1,0 +1,42 @@
+# Kiro API Proxy - Docker Compose 配置
+# 使用方法:
+#   启动服务: docker compose up -d
+#   查看日志: docker compose logs -f
+#   停止服务: docker compose down
+
+services:
+  kiro-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kiro-proxy:latest
+    container_name: kiro-proxy
+    restart: unless-stopped
+    ports:
+      - "${KIRO_PORT:-38045}:8080"
+    volumes:
+      # 配置持久化 - 保存账号信息
+      - kiro-config:/home/kiro/.kiro-proxy
+    environment:
+      # 时区设置
+      - TZ=${TZ:-Asia/Shanghai}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/api/status', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  kiro-config:
+    name: kiro-proxy-config
+
+# 网络配置（可选，用于与其他容器通信）
+networks:
+  default:
+    name: kiro-network
